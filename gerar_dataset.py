@@ -21,15 +21,16 @@ A entrada pode ser um .zip, uma pasta ou um único .txt/.md. Dentro do zip,
 cada .txt/.md é um texto (ou um capítulo, se o nome tiver "ch1", "chapter 2"...).
 
 ESTRUTURA DE PASTAS (detectada sozinha, a menos que você passe --layout)
-    categoria/fandom/obra/ch1.txt      ->  (categoria ignorada) / black-clover / Knight In Silver Armour
-    fandom/Obra - Ch1.txt              ->  black-clover / Obra
-    Obra/ch1.txt                       ->  título pela pasta
-    Obra - Ch1.txt                     ->  título pelo nome do arquivo
-Se o nome do arquivo já traz a obra, as pastas viram categoria/fandom;
-se o arquivo é só "ch1"/"01", a última pasta é a obra.
+    source/fandom/obra/ch1.txt         ->  fanfiction / black-clover / Knight In Silver Armour
+    source/fandom/Obra - Ch1.txt       ->  fanfiction / black-clover / Obra
+    source/Obra/ch1.txt                ->  só a source pela 1ª pasta; obra pela pasta
+    source/Obra - Ch1.txt              ->  source pela pasta; obra pelo nome do arquivo
+A pasta principal é sempre a source (fanfiction, ao3, rtenzo...) e as subpastas
+dentro dela são os fandoms. Se o nome do arquivo já traz a obra, as pastas viram
+source/fandom; se o arquivo é só "ch1"/"01", a última pasta é a obra.
 
 METADADOS (menor -> maior prioridade)
-    argumentos (--source, --fandom, --language)
+    argumentos (--source, --fandom, --language; --source é só o padrão quando não há pasta)
     < estrutura de pastas < front matter no arquivo (--- chave: valor ---)
 
 Só usa a biblioteca padrão do Python (3.8+).
@@ -54,10 +55,9 @@ FIELDS = [
     "id", "title", "chapter", "story", "source", "fandom", "words", "language",
 ]
 FRONT_MATTER_KEYS = {"title", "story", "source", "language", "chapter", "fandom"}
-# "subcategory" ainda é aceito no --layout só para posicionar as pastas (não vai pro dataset)
-LAYOUT_KEYS = {"source", "subcategory", "fandom", "title", "story"}
+LAYOUT_KEYS = {"source", "fandom", "title", "story"}
 KEY_ALIASES = {"story": "title"}  # "story" nas pastas/front matter = nome da obra
-SLUGGED_KEYS = {"fandom"}  # "Black Clover" -> "black-clover"
+SLUGGED_KEYS = {"source", "fandom"}  # "Black Clover" -> "black-clover"
 EXTENSIONS = {".txt", ".md"}
 
 # Detecta "ch1", "Ch01", "chapter 2", "cap_3", "capítulo-4" no nome do arquivo
@@ -199,17 +199,17 @@ def parse_layout(layout: str) -> list[str]:
 
 
 def auto_meta(folders: tuple[str, ...], story_in_folder: bool) -> dict:
-    """Infere (categoria ignorada)/fandom/obra só pela posição das pastas."""
+    """Infere source/fandom/obra só pela posição das pastas (1ª pasta = source)."""
     meta: dict = {}
     n = len(folders)
     if story_in_folder and n >= 1:
         meta["title"] = folders[-1]
         n -= 1
     outer = folders[:n]
-    if len(outer) == 1:
-        meta["fandom"] = outer[0]
-    elif len(outer) >= 2:
-        meta["subcategory"], meta["fandom"] = outer[0], outer[1]  # subcategory é descartada
+    if len(outer) >= 1:
+        meta["source"] = outer[0]
+    if len(outer) >= 2:
+        meta["fandom"] = outer[1]
     return meta
 
 
@@ -343,11 +343,12 @@ def main() -> None:
     ap.add_argument("--prefix", default="kmc-t1", help="prefixo do id (padrão: kmc-t1)")
     ap.add_argument("--start", type=int, default=1, help="número do primeiro id (padrão: 1)")
     ap.add_argument("--width", type=int, default=4, help="zeros à esquerda no id (padrão: 4)")
-    ap.add_argument("--source", default="fanfiction", help="padrão: fanfiction")
+    ap.add_argument("--source", default="fanfiction",
+                    help="source padrão quando não há pasta de source (padrão: fanfiction)")
     ap.add_argument("--fandom", help="ex.: black-clover (padrão: pelas pastas)")
     ap.add_argument("--language", default="en")
     ap.add_argument("--layout", default=None,
-                    help="força o mapeamento das pastas, ex.: subcategory/fandom/title "
+                    help="força o mapeamento das pastas, ex.: source/fandom/title "
                          "(padrão: detecta sozinho; '' = ignora pastas)")
     ap.add_argument("--flatten", action="store_true",
                     help="colapsa quebras de linha/espaços do texto em espaços simples")
