@@ -326,6 +326,8 @@ def generate(root: Path, out: Path, layout: list[str] | None, defaults: dict,
             key = (rec["source"], rec["fandom"], rec["title"])
             last[key] = last.get(key, 0) + 1
             rec["chapter"] = last[key]
+            rec["_sort"] = (rec["_sort"][0], rec["chapter"], rec["_sort"][2])
+    records.sort(key=lambda r: r["_sort"])
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="\n") as fh:
         for i, rec in enumerate(records, start=args.start):
