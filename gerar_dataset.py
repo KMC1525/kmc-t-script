@@ -3,8 +3,14 @@
 gerar_dataset.py — gera datasets .jsonl no formato do KMCLabs/kmc-t-dataset.
 
 Schema (um registro por linha, nesta ordem):
-    id, title, story, source, genre, subcategory, text,
-    chars, words, language, chapter, fandom
+    id        kmc-t-XXXX
+    title     título da obra
+    chapter   número do capítulo da obra (int, ou null)
+    story     história/capítulo completo
+    source    fanfiction, literotica, rtenzo net etc.
+    fandom    anime/manga, bimbo, naruto etc.
+    words     quantidade de palavras
+    language  idioma da história/capítulo
 
 USO RÁPIDO
     python gerar_dataset.py                      # pede o .zip no prompt (cole ou arraste)
@@ -15,15 +21,15 @@ A entrada pode ser um .zip, uma pasta ou um único .txt/.md. Dentro do zip,
 cada .txt/.md é um texto (ou um capítulo, se o nome tiver "ch1", "chapter 2"...).
 
 ESTRUTURA DE PASTAS (detectada sozinha, a menos que você passe --layout)
-    subcategory/fandom/story/ch1.txt   ->  anime-manga / black-clover / Knight In Silver Armour
-    fandom/Story - Ch1.txt             ->  black-clover / Story
-    Story/ch1.txt                      ->  story pela pasta
-    Story - Ch1.txt                    ->  story pelo nome do arquivo
-Se o nome do arquivo já traz a história, as pastas viram subcategory/fandom;
-se o arquivo é só "ch1"/"01", a última pasta é a história.
+    categoria/fandom/obra/ch1.txt      ->  (categoria ignorada) / black-clover / Knight In Silver Armour
+    fandom/Obra - Ch1.txt              ->  black-clover / Obra
+    Obra/ch1.txt                       ->  título pela pasta
+    Obra - Ch1.txt                     ->  título pelo nome do arquivo
+Se o nome do arquivo já traz a obra, as pastas viram categoria/fandom;
+se o arquivo é só "ch1"/"01", a última pasta é a obra.
 
 METADADOS (menor -> maior prioridade)
-    argumentos (--source, --genre, --subcategory, --fandom, --language)
+    argumentos (--source, --fandom, --language)
     < estrutura de pastas < front matter no arquivo (--- chave: valor ---)
 
 Só usa a biblioteca padrão do Python (3.8+).
@@ -45,15 +51,13 @@ from urllib.parse import unquote, urlparse
 
 # Ordem exata das colunas do dataset original
 FIELDS = [
-    "id", "title", "story", "source", "genre", "subcategory",
-    "text", "chars", "words", "language", "chapter", "fandom",
+    "id", "title", "chapter", "story", "source", "fandom", "words", "language",
 ]
-FRONT_MATTER_KEYS = {
-    "title", "story", "source", "genre", "subcategory",
-    "language", "chapter", "fandom",
-}
-LAYOUT_KEYS = {"source", "genre", "subcategory", "fandom", "story"}
-SLUGGED_KEYS = {"subcategory", "fandom"}  # "Black Clover" -> "black-clover"
+FRONT_MATTER_KEYS = {"title", "story", "source", "language", "chapter", "fandom"}
+# "subcategory" ainda é aceito no --layout só para posicionar as pastas (não vai pro dataset)
+LAYOUT_KEYS = {"source", "subcategory", "fandom", "title", "story"}
+KEY_ALIASES = {"story": "title"}  # "story" nas pastas/front matter = nome da obra
+SLUGGED_KEYS = {"fandom"}  # "Black Clover" -> "black-clover"
 EXTENSIONS = {".txt", ".md"}
 
 # Detecta "ch1", "Ch01", "chapter 2", "cap_3", "capítulo-4" no nome do arquivo
@@ -158,6 +162,8 @@ def parse_front_matter(raw: str) -> tuple[dict, str]:
         key = key.strip().lower()
         if key not in FRONT_MATTER_KEYS:
             continue
+        if key == "story":  # no schema novo "story" é o texto; aqui significa a obra
+            key = "title"
         value = value.strip().strip("\"'")
         meta[key] = None if value.lower() in {"", "null", "none"} else value
     return meta, raw[m.end():]
@@ -189,21 +195,21 @@ def parse_layout(layout: str) -> list[str]:
     invalid = [k for k in keys if k not in LAYOUT_KEYS]
     if invalid:
         sys.exit(f"--layout inválido: {invalid}. Permitidos: {sorted(LAYOUT_KEYS)}")
-    return keys
+    return [KEY_ALIASES.get(k, k) for k in keys]
 
 
 def auto_meta(folders: tuple[str, ...], story_in_folder: bool) -> dict:
-    """Infere subcategory/fandom/story só pela posição das pastas."""
+    """Infere (categoria ignorada)/fandom/obra só pela posição das pastas."""
     meta: dict = {}
     n = len(folders)
     if story_in_folder and n >= 1:
-        meta["story"] = folders[-1]
+        meta["title"] = folders[-1]
         n -= 1
     outer = folders[:n]
     if len(outer) == 1:
         meta["fandom"] = outer[0]
     elif len(outer) >= 2:
-        meta["subcategory"], meta["fandom"] = outer[0], outer[1]
+        meta["subcategory"], meta["fandom"] = outer[0], outer[1]  # subcategory é descartada
     return meta
 
 
@@ -234,48 +240,33 @@ def build_record(path: Path, root: Path, layout: list[str] | None,
 
     info = {**defaults, **from_folders, **front}
 
-    story = info.get("story")
-    if not story and chapter_num is None and front.get("title"):
-        story = front["title"]  # texto avulso com título no front matter
-    story = story or base_name or (folders[-1] if folders else path.stem)
+    title = info.get("title") or base_name or (folders[-1] if folders else path.stem)
 
-    title = info.get("title") or (
-        f"{story} - Ch{chapter_num}" if chapter_num is not None else story
-    )
     if "chapter" in front:
-        chapter = front["chapter"]
+        digits = re.search(r"\d+", front["chapter"] or "")
+        chapter = int(digits.group()) if digits else None
     else:
-        chapter = f"{story}-ch{chapter_num}" if chapter_num is not None else None
+        chapter = chapter_num
 
     source = info.get("source")
     if not source:
         raise ValueError("sem 'source' (use --source, --layout ou front matter)")
-    genre = info.get("genre") or source
 
-    body = clean_body(body, flatten)
-    if not body:
+    story = clean_body(body, flatten)
+    if not story:
         raise ValueError("arquivo vazio")
-    # o dataset original começa o texto pelo título
-    if body.lower().startswith(title.lower()):
-        text = body
-    else:
-        text = f"{title} {body}" if flatten else f"{title}\n\n{body}"
 
     return {
         "id": None,  # preenchido depois, já com a ordem final
         "title": title,
+        "chapter": chapter,
         "story": story,
         "source": source,
-        "genre": genre,
-        "subcategory": info.get("subcategory"),
-        "text": text,
-        "chars": len(text),
-        "words": len(text.split()),
-        "language": info.get("language") or "en",
-        "chapter": chapter,
         "fandom": info.get("fandom"),
-        "_sort": (story.lower(), chapter_num if chapter_num is not None else 0, str(path)),
-        "_fp": text_fingerprint(body),  # dedupe pelo corpo, ignorando o título
+        "words": len(story.split()),
+        "language": info.get("language") or "en",
+        "_sort": (title.lower(), chapter if chapter is not None else 0, str(path)),
+        "_fp": text_fingerprint(story),  # dedupe pelo texto
     }
 
 
@@ -299,8 +290,8 @@ def generate(root: Path, out: Path, layout: list[str] | None, defaults: dict,
         except Exception as exc:  # noqa: BLE001
             skipped.append((shown(path), str(exc)))
             continue
-        if rec["chars"] < args.min_chars or rec["words"] < args.min_words:
-            skipped.append((shown(path), f"abaixo do mínimo ({rec['chars']} chars, {rec['words']} palavras)"))
+        if len(rec["story"]) < args.min_chars or rec["words"] < args.min_words:
+            skipped.append((shown(path), f"abaixo do mínimo ({len(rec['story'])} chars, {rec['words']} palavras)"))
             continue
         if not args.no_dedupe:
             if rec["_fp"] in seen:
@@ -319,14 +310,14 @@ def generate(root: Path, out: Path, layout: list[str] | None, defaults: dict,
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     # resumo
-    total_chars = sum(r["chars"] for r in records)
+    total_chars = sum(len(r["story"]) for r in records)
     total_words = sum(r["words"] for r in records)
     print(f"✔ {len(records)} registros -> {out.resolve()}")
     if records:
         print(f"  ids: {records[0]['id']} … {records[-1]['id']}")
-        print(f"  histórias: {len({r['story'] for r in records})}")
+        print(f"  obras: {len({r['title'] for r in records})}")
     print(f"  {total_chars:,} caracteres | {total_words:,} palavras")
-    for field in ("source", "genre", "subcategory", "fandom"):
+    for field in ("source", "fandom", "language"):
         counts = Counter(r[field] for r in records)
         if counts:
             print(f"  {field}: " + ", ".join(f"{k}={v}" for k, v in counts.most_common()))
@@ -353,12 +344,10 @@ def main() -> None:
     ap.add_argument("--start", type=int, default=1, help="número do primeiro id (padrão: 1)")
     ap.add_argument("--width", type=int, default=4, help="zeros à esquerda no id (padrão: 4)")
     ap.add_argument("--source", default="fanfiction", help="padrão: fanfiction")
-    ap.add_argument("--genre", help="padrão: igual a --source")
-    ap.add_argument("--subcategory", help="ex.: anime-manga (padrão: pelas pastas)")
     ap.add_argument("--fandom", help="ex.: black-clover (padrão: pelas pastas)")
     ap.add_argument("--language", default="en")
     ap.add_argument("--layout", default=None,
-                    help="força o mapeamento das pastas, ex.: subcategory/fandom/story "
+                    help="força o mapeamento das pastas, ex.: subcategory/fandom/title "
                          "(padrão: detecta sozinho; '' = ignora pastas)")
     ap.add_argument("--flatten", action="store_true",
                     help="colapsa quebras de linha/espaços do texto em espaços simples")
@@ -378,8 +367,7 @@ def main() -> None:
     layout = parse_layout(args.layout) if args.layout is not None else None
     defaults = {
         k: v for k, v in {
-            "source": args.source, "genre": args.genre,
-            "subcategory": args.subcategory, "fandom": args.fandom,
+            "source": args.source, "fandom": args.fandom,
             "language": args.language,
         }.items() if v is not None
     }
