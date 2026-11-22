@@ -22,6 +22,9 @@ cada .txt/.md é um texto (ou um capítulo, se o nome tiver "ch1", "chapter 2"..
 
 ESTRUTURA DE PASTAS (detectada sozinha, a menos que você passe --layout)
     source/fandom/obra/ch1.txt         ->  fanfiction / black-clover / Knight In Silver Armour
+        (com 3 níveis de pasta, a pasta da obra manda no title e cada arquivo dentro
+         dela é um capítulo, seja "ch1", "01", "Chapter 3 - Nome" ou "Prólogo";
+         sem número no nome, o capítulo continua depois do maior número da obra)
     source/fandom/Obra - Ch1.txt       ->  fanfiction / black-clover / Obra
     source/Obra/ch1.txt                ->  só a source pela 1ª pasta; obra pela pasta
     source/Obra - Ch1.txt              ->  source pela pasta; obra pelo nome do arquivo
@@ -230,6 +233,14 @@ def build_record(path: Path, root: Path, layout: list[str] | None,
     folders = path.relative_to(base).parts[:-1]
     base_name, chapter_num = split_chapter(path.stem)
 
+    # 3+ níveis (source/fandom/obra/): a pasta da obra define o title e o arquivo é só o capítulo
+    chapter_file = layout is None and len(folders) >= 3
+    if chapter_file:
+        if chapter_num is None:  # nome sem "ch": usa o 1º número, ex. "03 - Nome.txt"
+            m = re.search(r"\d+", path.stem)
+            chapter_num = int(m.group()) if m else None
+        base_name = ""
+
     if layout is None:
         from_folders = auto_meta(folders, story_in_folder=not base_name)
     else:
@@ -241,6 +252,7 @@ def build_record(path: Path, root: Path, layout: list[str] | None,
     info = {**defaults, **from_folders, **front}
 
     title = info.get("title") or base_name or (folders[-1] if folders else path.stem)
+    auto_chapter = chapter_file and chapter_num is None and "chapter" not in front
 
     if "chapter" in front:
         digits = re.search(r"\d+", front["chapter"] or "")
@@ -265,6 +277,7 @@ def build_record(path: Path, root: Path, layout: list[str] | None,
         "fandom": info.get("fandom"),
         "words": len(story.split()),
         "language": info.get("language") or "en",
+        "_auto_chapter": auto_chapter,  # sem número no nome: numera pela ordem na pasta
         "_sort": (title.lower(), chapter if chapter is not None else 0, str(path)),
         "_fp": text_fingerprint(story),  # dedupe pelo texto
     }
@@ -302,6 +315,17 @@ def generate(root: Path, out: Path, layout: list[str] | None, defaults: dict,
 
     # ordem final: por história e capítulo; ids contíguos depois dos filtros
     records.sort(key=lambda r: r["_sort"])
+    # capítulos sem número no nome: continuam depois do maior número da obra (sem repetir)
+    last: dict = {}
+    for rec in records:
+        key = (rec["source"], rec["fandom"], rec["title"])
+        if not rec["_auto_chapter"] and rec["chapter"] is not None:
+            last[key] = max(last.get(key, 0), rec["chapter"])
+    for rec in records:
+        if rec["_auto_chapter"]:
+            key = (rec["source"], rec["fandom"], rec["title"])
+            last[key] = last.get(key, 0) + 1
+            rec["chapter"] = last[key]
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="\n") as fh:
         for i, rec in enumerate(records, start=args.start):
